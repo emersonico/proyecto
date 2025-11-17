@@ -115,6 +115,14 @@
     (primitive ("append") append-prim)
     (primitive ("ref-lista") ref-lista-prim)
     (primitive ("set-lista") set-lista-prim)
+    ; Diccionarios
+    (primitive ("crear-diccionario") crear-diccionario-prim)
+    (primitive ("diccionario-set") diccionario-set-prim)
+    (primitive ("diccionario-get") diccionario-get-prim)
+    (primitive ("diccionario?") diccionario-check-prim)
+    (primitive ("claves") claves-prim)
+    (primitive ("valores") valores-prim)
+    ; Operaciones básicas
     (primitive ("=") equal-prim)
     (primitive ("<") less-prim)
     (primitive (">") greater-prim)
@@ -155,6 +163,7 @@
           ((string? result) result)
           ((boolean? result) (if result 'true 'false))
           ((complex-num? result) (display-complex result))
+          ((dictionary? result) "#<dictionary>")
           (else result)))) 
     (sllgen:make-stream-parser 
       scanner-spec-simple-interpreter
@@ -311,6 +320,8 @@
       (append-prim () (append (car args) (cadr args)))
       (ref-lista-prim () (list-ref (car args) (cadr args)))
       (set-lista-prim () (list-set-helper (car args) (cadr args) (caddr args)))
+     
+      ; Operaciones básicas
       (equal-prim () (if (equal? (car args) (cadr args)) #t #f))
       (less-prim () (if (< (car args) (cadr args)) #t #f))
       (greater-prim () (if (> (car args) (cadr args)) #t #f))
@@ -319,7 +330,25 @@
       (and-prim () (if (and (true-value? (car args)) (true-value? (cadr args))) #t #f))
       (or-prim () (if (or (true-value? (car args)) (true-value? (cadr args))) #t #f))
       (not-prim () (if (true-value? (car args)) #f #t))
-      (print-prim () (display-value (car args))))))
+      (print-prim () (display-value (car args)))
+
+       ; Operaciones de diccionarios
+      (crear-diccionario-prim () (create-dictionary args))
+      (diccionario-set-prim () 
+                     (let ((dict (car args))
+                           (key (cadr args))
+                           (value (caddr args)))
+                       (dictionary-set dict key value)))
+      (diccionario-get-prim () 
+                     (let ((dict (car args))
+                           (key (cadr args)))
+                       (dictionary-get dict key)))
+      (diccionario-check-prim () (if (dictionary? (car args)) #t #f))
+      (claves-prim () (dictionary-keys (car args)))
+      (valores-prim () (dictionary-values (car args)))
+
+
+      )))
 
 ;*******************************************************************************************
 ;Helper functions for lists
@@ -342,7 +371,7 @@
       (else (find-first predicate-fn (cdr element-list))))))
 
 ;*******************************************************************************************
-;Helper functions for lists - continuation
+;Helper functions for lists 
 
 ; list-set-helper: replaces the element at position i with value
 (define list-set-helper
@@ -351,6 +380,8 @@
       ((null? target-list) (eopl:error 'list-set-helper "Index ~s out of bounds" position))
       ((= position 0) (cons new-value (cdr target-list)))
       (else (cons (car target-list) (list-set-helper (cdr target-list) (- position 1) new-value))))))
+
+
 
 ;true-value?: determina si un valor dado corresponde a un valor booleano falso o verdadero
 (define true-value?
@@ -519,11 +550,148 @@
          (display input-value)
          (newline)
          input-value))
+      ((dictionary? input-value)
+       (begin
+         (display "#<dictionary>")
+         (newline)
+         input-value))
       (else
        (begin
          (display input-value)
          (newline)
          input-value)))))
+
+;*******************************************************************************************
+; DICTIONARY IMPLEMENTATION - 
+; =============================================================================
+
+; Dictionary data type definition
+(define-datatype dictionary dictionary?
+  (dict
+   (bindings list?)))
+
+; Creates a new dictionary instance
+; Parameters:
+;   - key-value-pairs: list of arguments representing key-value pairs
+; Returns: a dictionary object containing the provided key-value mappings
+; Throws error if number of arguments is odd (unbalanced key-value pairs)
+(define create-dictionary
+  (lambda (key-value-pairs)
+    (let ((pairs-list key-value-pairs))
+      (cond
+        ; Empty dictionary case
+        ((null? pairs-list) 
+         (dict '()))
+        ; Validate even number of arguments for proper key-value pairing
+        ((odd? (length pairs-list))
+         (eopl:error 'create-dictionary 
+                     "Invalid number of arguments - expected even number for key-value pairs"))
+        ; Recursively build dictionary from key-value pairs
+        (else
+         (let build-dict ((remaining-pairs pairs-list) 
+                          (accumulated-bindings '()))
+           (if (null? remaining-pairs)
+               (dict (reverse accumulated-bindings)) ; Reverse to maintain insertion order
+               (let ((current-key (car remaining-pairs))
+                     (current-value (cadr remaining-pairs)))
+                 (build-dict (cddr remaining-pairs)
+                            (cons (cons current-key current-value) 
+                                  accumulated-bindings))))))))))
+
+; Inserts or updates a key-value mapping in the dictionary
+; Parameters:
+;   - dict-obj: the dictionary to modify
+;   - target-key: the key to insert/update
+;   - new-value: the value to associate with the key
+; Returns: new dictionary with the updated mapping
+(define dictionary-set
+  (lambda (dict-obj target-key new-value)
+    (cases dictionary dict-obj
+      (dict (bindings)
+            ; Remove existing binding for the key (if any) and add new one
+            (let ((filtered-bindings 
+                   (filter-list (lambda (binding) 
+                                 (not (equal? (car binding) target-key)))
+                               bindings)))
+              (dict (cons (cons target-key new-value) filtered-bindings)))))))
+
+; Retrieves the value associated with a key from the dictionary
+; Parameters:
+;   - dict-obj: the dictionary to search
+;   - target-key: the key to look up
+; Returns: the value associated with the key
+; Throws error if key is not found
+(define dictionary-get
+  (lambda (dict-obj target-key)
+    (cases dictionary dict-obj
+      (dict (bindings)
+            (let search-binding ((binding-list bindings))
+              (cond
+                ((null? binding-list)
+                 (eopl:error 'dictionary-get 
+                             "Key ~s not found in dictionary" target-key))
+                ((equal? (caar binding-list) target-key)
+                 (cdar binding-list))
+                (else
+                 (search-binding (cdr binding-list)))))))))
+
+; Extracts all keys from the dictionary
+; Parameters:
+;   - dict-obj: the dictionary to process
+; Returns: list of all keys in the dictionary
+(define dictionary-keys
+  (lambda (dict-obj)
+    (cases dictionary dict-obj
+      (dict (bindings)
+            (map (lambda (pair) (car pair)) bindings)))))
+
+; Extracts all values from the dictionary
+; Parameters:
+;   - dict-obj: the dictionary to process
+; Returns: list of all values in the dictionary
+(define dictionary-values
+  (lambda (dict-obj)
+    (cases dictionary dict-obj
+      (dict (bindings)
+            (map (lambda (pair) (cdr pair)) bindings)))))
+
+; Checks if a dictionary contains a specific key
+; Parameters:
+;   - dict-obj: the dictionary to check
+;   - target-key: the key to search for
+; Returns: #t if key exists, #f otherwise
+(define dictionary-contains?
+  (lambda (dict-obj target-key)
+    (cases dictionary dict-obj
+      (dict (bindings)
+            (if (find-first (lambda (pair) 
+                             (equal? (car pair) target-key)) 
+                           bindings)
+                #t
+                #f)))))
+
+; Returns the number of key-value pairs in the dictionary
+; Parameters:
+;   - dict-obj: the dictionary to measure
+; Returns: integer count of entries
+(define dictionary-size
+  (lambda (dict-obj)
+    (cases dictionary dict-obj
+      (dict (bindings)
+            (length bindings)))))
+
+; Creates a copy of the dictionary
+; Parameters:
+;   - dict-obj: the dictionary to copy
+; Returns: new dictionary with same bindings
+(define dictionary-copy
+  (lambda (dict-obj)
+    (cases dictionary dict-obj
+      (dict (bindings)
+            (dict (map (lambda (pair) 
+                        (cons (car pair) (cdr pair))) 
+                      bindings))))))
+
 
 ;******************************************************************************************
 (interpretador)
