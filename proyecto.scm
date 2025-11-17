@@ -46,6 +46,16 @@
    (digit (arbno digit)) number)
   (number
    ("-" digit (arbno digit)) number)
+  (number
+   (digit (arbno digit) "." digit (arbno digit)) number)
+  (number
+   ("-" digit (arbno digit) "." digit (arbno digit)) number)
+  (imaginary-number
+   (digit (arbno digit) "i") symbol)
+  (imaginary-number
+   ("-" digit (arbno digit) "i") symbol)
+  (string
+   ("\"" (arbno (not #\")) "\"") string)
   (boolean
    ("true") symbol)
   (boolean
@@ -57,6 +67,8 @@
   '((program (expression) a-program)
     (expression (number) lit-exp)
     (expression (boolean) bool-exp)
+    (expression (imaginary-number) imag-exp)
+    (expression (string) string-exp)
     (expression (identifier) variable-exp)
     (expression
      (primitive "(" (separated-list expression ",")")")
@@ -89,6 +101,20 @@
     (primitive ("*") mult-prim)
     (primitive ("add1") incr-prim)
     (primitive ("sub1") decr-prim)
+    (primitive ("complex") complex-prim)
+    (primitive ("sum-complex") sum-complex-prim)
+    (primitive ("sub-complex") sub-complex-prim)
+    (primitive ("mult-complex") mult-complex-prim)
+    (primitive ("div-complex") div-complex-prim)
+    (primitive ("vacio") vacio-prim)
+    (primitive ("crear-lista") crear-lista-prim)
+    (primitive ("cabeza") cabeza-prim)
+    (primitive ("cola") cola-prim)
+    (primitive ("vacio?") vacio-check-prim)
+    (primitive ("lista?") lista-check-prim)
+    (primitive ("append") append-prim)
+    (primitive ("ref-lista") ref-lista-prim)
+    (primitive ("set-lista") set-lista-prim)
     (primitive ("=") equal-prim)
     (primitive ("<") less-prim)
     (primitive (">") greater-prim)
@@ -96,7 +122,8 @@
     (primitive (">=") greater-equal-prim)
     (primitive ("and") and-prim)
     (primitive ("or") or-prim)
-    (primitive ("not") not-prim)))
+    (primitive ("not") not-prim)
+    (primitive ("print") print-prim)))
 
 ;Construidos automáticamente:
 
@@ -123,7 +150,12 @@
 (define interpretador
   (sllgen:make-rep-loop  "--> "
     (lambda (pgm) 
-      (eval-program pgm))
+      (let ((result (eval-program pgm)))
+        (cond
+          ((string? result) result)
+          ((boolean? result) (if result 'true 'false))
+          ((complex-num? result) (display-complex result))
+          (else result)))) 
     (sllgen:make-stream-parser 
       scanner-spec-simple-interpreter
       grammar-simple-interpreter)))
@@ -152,6 +184,11 @@
     (cases expression exp
       (lit-exp (datum) datum)
       (bool-exp (datum) (convert-symbol-to-bool datum))
+      (imag-exp (datum) 
+                (let ((num-str (symbol->string datum)))
+                  (let ((num-part (string->number (substring num-str 0 (- (string-length num-str) 1)))))
+                    num-part)))
+      (string-exp (str) str)
       (variable-exp (id) (apply-env env id))
       (primapp-exp (prim rands)
                    (let ((args (eval-rands rands env)))
@@ -233,6 +270,47 @@
       (mult-prim () (* (car args) (cadr args)))
       (incr-prim () (+ (car args) 1))
       (decr-prim () (- (car args) 1))
+      (complex-prim () (make-complex (car args) (cadr args)))
+      (sum-complex-prim () 
+                        (let ((complex1 (car args)) (complex2 (cadr args)))
+                          (cases complex-num complex1
+                            (make-complex (real1 imag1)
+                                     (cases complex-num complex2
+                                       (make-complex (real2 imag2)
+                                                (make-complex (+ real1 real2) (+ imag1 imag2))))))))
+      (sub-complex-prim () 
+                        (let ((complex1 (car args)) (complex2 (cadr args)))
+                          (cases complex-num complex1
+                            (make-complex (real1 imag1)
+                                     (cases complex-num complex2
+                                       (make-complex (real2 imag2)
+                                                (make-complex (- real1 real2) (- imag1 imag2))))))))
+      (mult-complex-prim () 
+                         (let ((complex1 (car args)) (complex2 (cadr args)))
+                           (cases complex-num complex1
+                             (make-complex (real1 imag1)
+                                      (cases complex-num complex2
+                                        (make-complex (real2 imag2)
+                                                 (make-complex (- (* real1 real2) (* imag1 imag2)) 
+                                                         (+ (* real1 imag2) (* imag1 real2)))))))))
+      (div-complex-prim () 
+                        (let ((complex1 (car args)) (complex2 (cadr args)))
+                          (cases complex-num complex1
+                            (make-complex (real1 imag1)
+                                     (cases complex-num complex2
+                                       (make-complex (real2 imag2)
+                                                (let ((denominator (+ (* real2 real2) (* imag2 imag2))))
+                                                  (make-complex (/ (+ (* real1 real2) (* imag1 imag2)) denominator)
+                                                          (/ (- (* imag1 real2) (* real1 imag2)) denominator)))))))))
+      (vacio-prim () '())
+      (crear-lista-prim () (cons (car args) (cadr args)))
+      (cabeza-prim () (car (car args)))
+      (cola-prim () (cdr (car args)))
+      (vacio-check-prim () (if (null? (car args)) #t #f))
+      (lista-check-prim () (if (list? (car args)) #t #f))
+      (append-prim () (append (car args) (cadr args)))
+      (ref-lista-prim () (list-ref (car args) (cadr args)))
+      (set-lista-prim () (list-set-helper (car args) (cadr args) (caddr args)))
       (equal-prim () (if (equal? (car args) (cadr args)) #t #f))
       (less-prim () (if (< (car args) (cadr args)) #t #f))
       (greater-prim () (if (> (car args) (cadr args)) #t #f))
@@ -240,7 +318,39 @@
       (greater-equal-prim () (if (>= (car args) (cadr args)) #t #f))
       (and-prim () (if (and (true-value? (car args)) (true-value? (cadr args))) #t #f))
       (or-prim () (if (or (true-value? (car args)) (true-value? (cadr args))) #t #f))
-      (not-prim () (if (true-value? (car args)) #f #t)))))
+      (not-prim () (if (true-value? (car args)) #f #t))
+      (print-prim () (display-value (car args))))))
+
+;*******************************************************************************************
+;Helper functions for lists
+
+; filter-list: filters a list based on a predicate
+(define filter-list
+  (lambda (predicate-fn element-list)
+    (cond
+      ((null? element-list) '())
+      ((predicate-fn (car element-list)) 
+       (cons (car element-list) (filter-list predicate-fn (cdr element-list))))
+      (else (filter-list predicate-fn (cdr element-list))))))
+
+; find-first: finds the first element that satisfies the predicate
+(define find-first
+  (lambda (predicate-fn element-list)
+    (cond
+      ((null? element-list) #f)
+      ((predicate-fn (car element-list)) (car element-list))
+      (else (find-first predicate-fn (cdr element-list))))))
+
+;*******************************************************************************************
+;Helper functions for lists - continuation
+
+; list-set-helper: replaces the element at position i with value
+(define list-set-helper
+  (lambda (target-list position new-value)
+    (cond
+      ((null? target-list) (eopl:error 'list-set-helper "Index ~s out of bounds" position))
+      ((= position 0) (cons new-value (cdr target-list)))
+      (else (cons (car target-list) (list-set-helper (cdr target-list) (- position 1) new-value))))))
 
 ;true-value?: determina si un valor dado corresponde a un valor booleano falso o verdadero
 (define true-value?
@@ -257,6 +367,13 @@
       ((eq? symb 'true) #t)
       ((eq? symb 'false) #f)
       (else (eopl:error 'convert-symbol-to-bool "Símbolo booleano no válido: ~s" symb)))))
+
+;*******************************************************************************************
+;Complex Numbers
+(define-datatype complex-num complex-num?
+  (make-complex
+   (real-part number?)
+   (imag-part number?)))
 
 ;*******************************************************************************************
 ;Procedimientos
@@ -359,6 +476,54 @@
          (if (number? remaining-index)
              (+ remaining-index 1)
              #f))))))
+
+; Function to display complex numbers in readable format
+(define display-complex
+  (lambda (complex-value)
+    (cases complex-num complex-value
+      (make-complex (real-component imag-component)
+               (let ((real-string (if (integer? real-component) 
+                                   (number->string (inexact->exact real-component))
+                                   (number->string real-component)))
+                     (imag-string (if (integer? imag-component) 
+                                   (number->string (inexact->exact imag-component))
+                                   (number->string imag-component))))
+                 (cond
+                   ((= imag-component 0) real-string)
+                   ((= real-component 0) 
+                    (cond
+                      ((= imag-component 1) "i")
+                      ((= imag-component -1) "-i")
+                      (else (string-append imag-string "i"))))
+                   ((= imag-component 1) (string-append real-string "+i"))
+                   ((= imag-component -1) (string-append real-string "-i"))
+                   ((> imag-component 0) (string-append real-string "+" imag-string "i"))
+                   (else (string-append real-string imag-string "i"))))))))
+
+; display-value: prints a value and returns the same value
+(define display-value
+  (lambda (input-value)
+    (cond
+      ((boolean? input-value)
+       (begin
+         (display (if input-value "true" "false"))
+         (newline)
+         input-value))
+      ((complex-num? input-value)
+       (begin
+         (display (display-complex input-value))
+         (newline)
+         input-value))
+      ((list? input-value)
+       (begin
+         (display input-value)
+         (newline)
+         input-value))
+      (else
+       (begin
+         (display input-value)
+         (newline)
+         input-value)))))
 
 ;******************************************************************************************
 (interpretador)
