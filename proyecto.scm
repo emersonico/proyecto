@@ -1,34 +1,54 @@
 #lang eopl
 
 ;******************************************************************************************
-;;;;; Interpretador para lenguaje con condicionales, ligadura local, procedimientos y 
-;;;;; procedimientos recursivos
+;;;;; Interpretador para lenguaje con condicionales, ligadura local, procedimientos,
+;;;;; procedimientos recursivos, ejecución secuencial y asignación de variables
+;;;;; con tipos de datos extendidos, bucles y estructuras de control
 
 ;; La definición BNF para las expresiones del lenguaje:
 ;;
-;;  <program>       ::= <expression>   
+;;  <program>       ::= <expression>
 ;;                      <a-program (exp)>
 ;;  <expression>    ::= <number>
 ;;                      <lit-exp (datum)>
+;;                  ::= <boolean>
+;;                      <bool-exp (datum)>
+;;                  ::= <imaginary-number>
+;;                      <imag-exp (datum)>
+;;                  ::= <string>
+;;                      <string-exp (str)>
 ;;                  ::= <identifier>
-;;                      <variable-exp (id)>
+;;                      <var-exp (id)>
 ;;                  ::= <primitive> ({<expression>}*(,))
 ;;                      <primapp-exp (prim rands)>
 ;;                  ::= if <expresion> then <expresion> else <expression>
 ;;                      <if-exp (exp1 exp2 exp23)>
+;;                  ::= let {<identifier> = <expression>}* in <expression>
+;;                      <let-exp (ids rands body)>
 ;;                  ::= var {identifier = <expression>}* in <expression>
 ;;                      <var-exp (ids rands body)>
 ;;                  ::= const {identifier = <expression>}* in <expression>
 ;;                      <const-exp (ids rands body)>
-;;                  ::= let {identifier = <expression>}* in <expression>
-;;                      <let-exp (ids rands body)>
 ;;                  ::= proc({<identificador>}*(,)) <expression>
 ;;                      <proc-exp (ids body)>
 ;;                  ::= (<expression> {<expression>}*)
 ;;                      <app-exp proc rands>
 ;;                  ::= letrec  {identifier ({identifier}*(,)) = <expression>}* in <expression>
-;;                     <letrec-exp proc-names idss bodies bodyletrec>
-;;  <primitive>     ::= + | - | * | add1 | sub1 
+;;                     <letrec-exp(proc-names idss bodies bodyletrec)>
+;;                  ::= begin <expression> {; <expression>}* end
+;;                     <begin-exp (exp exps)>
+;;                  ::= set <identifier> = <expression>
+;;                     <set-exp (id rhsexp)>
+;;                  ::= switch (<expression>) {case <expression>: {<expression>}* default: {<expression>}}
+;;                     <switch-exp (switch-expr case-vals case-bodies default-body)>
+;;                  ::= for <identifier> = <expression> to <expression> do <expression>
+;;                     <for-exp (var start-exp end-exp body)>
+;;                  ::= while <expression> do <expression>
+;;                     <while-exp (condition body)>
+;;  <primitive>     ::= + | - | * | add1 | sub1 | complex | sum-complex | sub-complex | mult-complex | div-complex
+;;                  ::= vacio | crear-lista | cabeza | cola | vacio? | lista? | append | ref-lista | set-lista
+;;                  ::= crear-diccionario | diccionario-set | diccionario-get | diccionario? | claves | valores
+;;                  ::= = | < | > | <= | >= | and | or | not | print
 
 ;******************************************************************************************
 
@@ -69,31 +89,37 @@
     (expression (boolean) bool-exp)
     (expression (imaginary-number) imag-exp)
     (expression (string) string-exp)
-    (expression (identifier) variable-exp)
+    (expression (identifier) var-exp)
     (expression
      (primitive "(" (separated-list expression ",")")")
      primapp-exp)
     (expression ("if" expression "then" expression "else" expression)
                 if-exp)
+    (expression ("let" (arbno identifier "=" expression) "in" expression)
+                let-exp)
     (expression ("var" identifier "=" expression (arbno ";" identifier "=" expression) "in" expression)
-                var-exp)
+                var-decl-exp)
     (expression ("const" identifier "=" expression (arbno ";" identifier "=" expression) "in" expression)
                 const-exp)
-    (expression ("let" identifier "=" expression (arbno ";" identifier "=" expression) "in" expression)
-                let-exp)
     (expression ("proc" "(" (arbno identifier) ")" expression)
                 proc-exp)
     (expression ( "(" expression (arbno expression) ")")
                 app-exp)
-    
-    ; características adicionales
     (expression ("letrec" (arbno identifier "(" (separated-list identifier ",") ")" "=" expression)  "in" expression) 
                 letrec-exp)
+    
+    ; características adicionales
+    (expression ("begin" expression (arbno ";" expression) "end")
+                begin-exp)
+    (expression ("set" identifier "=" expression)
+                set-exp)
     (expression ("switch" "(" expression ")" "{" 
                 (arbno "case" expression ":" "{" expression "}")
                 "default" ":" "{" expression "}"
                 "}") switch-exp)
-    (expression ("begin" (arbno expression) "end") begin-exp)
+    ; BUCLES AÑADIDOS
+    (expression ("for" identifier "=" expression "to" expression "do" expression) for-exp)
+    (expression ("while" expression "do" expression) while-exp)
     ;;;;;;
 
     (primitive ("+") add-prim)
@@ -115,6 +141,8 @@
     (primitive ("append") append-prim)
     (primitive ("ref-lista") ref-lista-prim)
     (primitive ("set-lista") set-lista-prim)
+    (primitive ("longitud") longitud-prim)
+    (primitive ("concatenar") concatenar-prim)
     ; Diccionarios
     (primitive ("crear-diccionario") crear-diccionario-prim)
     (primitive ("diccionario-set") diccionario-set-prim)
@@ -184,10 +212,29 @@
 ; Ambiente inicial
 (define init-env
   (lambda ()
-    (empty-env)))
+    (extend-env
+     '(x y z)
+     (list (direct-target 1)
+           (direct-target 5)
+           (direct-target 10))
+     (empty-env))))
 
 ;eval-expression: <expression> <enviroment> -> numero
 ; evalua la expresión en el ambiente de entrada
+
+;**************************************************************************************
+;Definición tipos de datos referencia y blanco
+
+(define-datatype target target?
+  (direct-target (expval expval?))
+  (indirect-target (ref ref-to-direct-target?)))
+
+(define-datatype reference reference?
+  (a-ref (position integer?)
+         (vec vector?)))
+
+;**************************************************************************************
+
 (define eval-expression
   (lambda (exp env)
     (cases expression exp
@@ -198,29 +245,27 @@
                   (let ((num-part (string->number (substring num-str 0 (- (string-length num-str) 1)))))
                     num-part)))
       (string-exp (str) str)
-      (variable-exp (id) (apply-env env id))
+      (var-exp (id) (apply-env-no-ref env id))
       (primapp-exp (prim rands)
-                   (let ((args (eval-rands rands env)))
+                   (let ((args (eval-primapp-exp-rands rands env)))
                      (apply-primitive prim args)))
       (if-exp (test-exp true-exp false-exp)
               (if (true-value? (eval-expression test-exp env))
                   (eval-expression true-exp env)
                   (eval-expression false-exp env)))
-      (var-exp (id1 rand1 ids rands body)
-               (let ((val1 (eval-expression rand1 env)))
-                 (let ((all-ids (cons id1 ids))
-                       (all-vals (cons val1 (eval-rands rands env))))
-                   (eval-expression body (extend-env all-ids all-vals env)))))
+      (let-exp (ids rands body)
+               (let ((args (eval-let-exp-rands rands env)))
+                 (eval-expression body (extend-env ids args env))))
+      (var-decl-exp (id1 rand1 ids rands body)
+                    (let ((val1 (eval-expression rand1 env)))
+                      (let ((all-ids (cons id1 ids))
+                            (all-vals (cons (direct-target val1) (eval-let-exp-rands rands env))))
+                        (eval-expression body (extend-env all-ids all-vals env)))))
       (const-exp (id1 rand1 ids rands body)
                  (let ((val1 (eval-expression rand1 env)))
                    (let ((all-ids (cons id1 ids))
-                         (all-vals (cons val1 (eval-rands rands env))))
+                         (all-vals (cons (direct-target val1) (eval-let-exp-rands rands env))))
                      (eval-expression body (extend-env-const all-ids all-vals env)))))
-      (let-exp (id1 rand1 ids rands body)
-               (let ((val1 (eval-expression rand1 env)))
-                 (let ((all-ids (cons id1 ids))
-                       (all-vals (cons val1 (eval-rands rands env))))
-                   (eval-expression body (extend-env all-ids all-vals env)))))
       (proc-exp (ids body)
                 (closure ids body env))
       (app-exp (rator rands)
@@ -233,10 +278,25 @@
       (letrec-exp (proc-names idss bodies letrec-body)
                   (eval-expression letrec-body
                                    (extend-env-recursively proc-names idss bodies env)))
+      (set-exp (id rhs-exp)
+               (begin
+                 (setref!
+                  (apply-env-ref env id)
+                  (eval-expression rhs-exp env))
+                 1))
+      (begin-exp (exp exps)
+                 (let loop ((acc (eval-expression exp env))
+                            (exps exps))
+                   (if (null? exps) 
+                       acc
+                       (loop (eval-expression (car exps) env)
+                             (cdr exps)))))
       (switch-exp (switch-expr case-vals case-bodies default-body)
                   (process-switch-statement switch-expr case-vals case-bodies default-body env))
-      (begin-exp (exps)
-                 (execute-expression-sequence exps env)))))
+      (for-exp (var start-exp end-exp body)
+               (eval-for-loop var start-exp end-exp body env))
+      (while-exp (condition body)
+                 (eval-while-loop condition body env)))))
 
 ; Procesa una estructura switch-case
 (define process-switch-statement
@@ -250,15 +310,32 @@
           (else (check-cases (cdr remaining-cases) (cdr remaining-bodies)))))
       (check-cases case-exprs case-bodies))))
 
-; Ejecuta una secuencia de expresiones en orden
-(define execute-expression-sequence
-  (lambda (expr-list env)
-    (if (null? expr-list)
-        0
-        (let ((first-result (eval-expression (car expr-list) env)))
-          (if (null? (cdr expr-list))
-              first-result
-              (execute-expression-sequence (cdr expr-list) env))))))
+; Evalúa un bucle for
+(define eval-for-loop
+  (lambda (iteration-var start-expr end-expr body-expr env)
+    (let ((start-value (eval-expression start-expr env))
+          (end-value (eval-expression end-expr env)))
+      (if (> start-value end-value)
+          0
+          (let loop ((current-value start-value))
+            (if (<= current-value end-value)
+                (begin
+                  (eval-expression body-expr 
+                                   (extend-env (list iteration-var) 
+                                               (list (direct-target current-value)) 
+                                               env))
+                  (loop (+ current-value 1)))
+                0))))))
+
+; Evalúa un bucle while
+(define eval-while-loop
+  (lambda (condition-expr body-expr env)
+    (let loop ()
+      (if (true-value? (eval-expression condition-expr env))
+          (begin
+            (eval-expression body-expr env)
+            (loop))
+          0))))
 
 ; funciones auxiliares para aplicar eval-expression a cada elemento de una 
 ; lista de operandos (expresiones)
@@ -268,7 +345,28 @@
 
 (define eval-rand
   (lambda (rand env)
-    (eval-expression rand env)))
+    (cases expression rand
+      (var-exp (id)
+               (indirect-target
+                (let ((ref (apply-env-ref env id)))
+                  (cases target (primitive-deref ref)
+                    (direct-target (expval) ref)
+                    (indirect-target (ref1) ref1)))))
+      (else
+       (direct-target (eval-expression rand env))))))
+
+(define eval-primapp-exp-rands
+  (lambda (rands env)
+    (map (lambda (x) (eval-expression x env)) rands)))
+
+(define eval-let-exp-rands
+  (lambda (rands env)
+    (map (lambda (x) (eval-let-exp-rand x env))
+         rands)))
+
+(define eval-let-exp-rand
+  (lambda (rand env)
+    (direct-target (eval-expression rand env))))
 
 ;apply-primitive: <primitiva> <list-of-expression> -> numero
 (define apply-primitive
@@ -320,6 +418,25 @@
       (append-prim () (append (car args) (cadr args)))
       (ref-lista-prim () (list-ref (car args) (cadr args)))
       (set-lista-prim () (list-set-helper (car args) (cadr args) (caddr args)))
+      (longitud-prim () 
+                     (let ((str (car args)))
+                       (if (and (>= (string-length str) 2)
+                                (equal? (string-ref str 0) #\")
+                                (equal? (string-ref str (- (string-length str) 1)) #\"))
+                           (- (string-length str) 2)  ; No contar las comillas
+                           (string-length str))))     ; Contar normalmente si no tiene comillas
+      (concatenar-prim () 
+                       (let ((str1 (car args))
+                             (str2 (cadr args)))
+                         ; Remover comillas dobles del inicio y final si existen
+                         (define (remove-quotes s)
+                           (cond
+                             ((and (>= (string-length s) 2)
+                                   (equal? (string-ref s 0) #\")
+                                   (equal? (string-ref s (- (string-length s) 1)) #\"))
+                              (substring s 1 (- (string-length s) 1)))
+                             (else s)))
+                         (string-append (remove-quotes str1) (remove-quotes str2))))
      
       ; Operaciones básicas
       (equal-prim () (if (equal? (car args) (cadr args)) #t #f))
@@ -332,7 +449,7 @@
       (not-prim () (if (true-value? (car args)) #f #t))
       (print-prim () (display-value (car args)))
 
-       ; Operaciones de diccionarios
+      ; Operaciones de diccionarios
       (crear-diccionario-prim () (create-dictionary args))
       (diccionario-set-prim () 
                      (let ((dict (car args))
@@ -345,10 +462,7 @@
                        (dictionary-get dict key)))
       (diccionario-check-prim () (if (dictionary? (car args)) #t #f))
       (claves-prim () (dictionary-keys (car args)))
-      (valores-prim () (dictionary-values (car args)))
-
-
-      )))
+      (valores-prim () (dictionary-values (car args))))))
 
 ;*******************************************************************************************
 ;Helper functions for lists
@@ -380,8 +494,6 @@
       ((null? target-list) (eopl:error 'list-set-helper "Index ~s out of bounds" position))
       ((= position 0) (cons new-value (cdr target-list)))
       (else (cons (car target-list) (list-set-helper (cdr target-list) (- position 1) new-value))))))
-
-
 
 ;true-value?: determina si un valor dado corresponde a un valor booleano falso o verdadero
 (define true-value?
@@ -427,12 +539,14 @@
 ;definición del tipo de dato ambiente
 (define-datatype environment environment?
   (empty-env-record)
-  (extended-env-record (syms (list-of symbol?))
-                       (vals (list-of scheme-value?))
-                       (env environment?))
-  (extended-env-const-record (syms (list-of symbol?))
-                             (vals (list-of scheme-value?))
-                             (env environment?))
+  (extended-env-record
+   (syms (list-of symbol?))
+   (vec vector?)
+   (env environment?))
+  (extended-env-const-record
+   (syms (list-of symbol?))
+   (vec vector?)
+   (env environment?))
   (recursively-extended-env-record (proc-names (list-of symbol?))
                                    (idss (list-of (list-of symbol?)))
                                    (bodies (list-of expression?))
@@ -444,69 +558,164 @@
 ;función que crea un ambiente vacío
 (define empty-env  
   (lambda ()
-    (empty-env-record)))       ;llamado al constructor de ambiente vacío 
+    (empty-env-record)))
 
 ;extend-env: <list-of symbols> <list-of numbers> enviroment -> enviroment
 ;función que crea un ambiente extendido
 (define extend-env
   (lambda (syms vals env)
-    (extended-env-record syms vals env)))
+    (extended-env-record syms (list->vector vals) env)))
 
 ; Crea un entorno extendido para constantes (no modificables)
 (define extend-env-const
   (lambda (symbols values parent-env)
-    (extended-env-const-record symbols values parent-env)))
+    (extended-env-const-record symbols (list->vector values) parent-env)))
 
 ;extend-env-recursively: <list-of symbols> <list-of <list-of symbols>> <list-of expressions> environment -> environment
 ;función que crea un ambiente extendido para procedimientos recursivos
 (define extend-env-recursively
   (lambda (proc-names idss bodies old-env)
-    (recursively-extended-env-record
-     proc-names idss bodies old-env)))
+    (let ((len (length proc-names)))
+      (let ((vec (make-vector len)))
+        (let ((env (extended-env-record proc-names vec old-env)))
+          (for-each
+            (lambda (pos ids body)
+              (vector-set! vec pos (direct-target (closure ids body env))))
+            (iota len) idss bodies)
+          env)))))
+
+;iota: number -> list
+;función que retorna una lista de los números desde 0 hasta end
+(define iota
+  (lambda (end)
+    (let loop ((next 0))
+      (if (>= next end) '()
+        (cons next (loop (+ 1 next)))))))
 
 ;función que busca un símbolo en un ambiente
 (define apply-env
   (lambda (env sym)
+    (deref (apply-env-ref env sym))))
+
+(define apply-env-ref
+  (lambda (env sym)
     (cases environment env
       (empty-env-record ()
-                        (eopl:error 'empty-env "No binding for ~s" sym))
-      (extended-env-record (syms vals old-env)
-                           (let ((pos (list-find-position sym syms)))
+                        (eopl:error 'apply-env-ref "No binding for ~s" sym))
+      (extended-env-record (syms vals env)
+                           (let ((pos (rib-find-position sym syms)))
                              (if (number? pos)
-                                 (list-ref vals pos)
-                                 (apply-env old-env sym))))
-      (extended-env-const-record (syms vals old-env)
-                                 (let ((pos (list-find-position sym syms)))
+                                 (a-ref pos vals)
+                                 (apply-env-ref env sym))))
+      (extended-env-const-record (syms vals env)
+                                 (let ((pos (rib-find-position sym syms)))
                                    (if (number? pos)
-                                       (list-ref vals pos)
-                                       (apply-env old-env sym))))
+                                       (eopl:error 'set "Cannot modify constant ~s" sym) ; <- ERROR aquí
+                                       (apply-env-ref env sym))))
       (recursively-extended-env-record (proc-names idss bodies old-env)
-                                       (let ((pos (list-find-position sym proc-names)))
+                                       (let ((pos (rib-find-position sym proc-names)))
                                          (if (number? pos)
-                                             (closure (list-ref idss pos)
-                                                      (list-ref bodies pos)
-                                                      env)
-                                             (apply-env old-env sym)))))))
+                                             (let ((vec (make-vector 1)))
+                                               (vector-set! vec 0 (direct-target (closure (list-ref idss pos)
+                                                                                          (list-ref bodies pos)
+                                                                                          env)))
+                                               (a-ref 0 vec))
+                                             (apply-env-ref old-env sym)))))))
+
+; Función auxiliar para aplicar el ambiente sin referencia (solo para lectura)
+(define apply-env-no-ref
+  (lambda (env sym)
+    (cases environment env
+      (empty-env-record ()
+                        (eopl:error 'apply-env "No binding for ~s" sym))
+      (extended-env-record (syms vals env)
+                           (let ((pos (rib-find-position sym syms)))
+                             (if (number? pos)
+                                 (deref (a-ref pos vals))
+                                 (apply-env-no-ref env sym))))
+      (extended-env-const-record (syms vals env)
+                                 (let ((pos (rib-find-position sym syms)))
+                                   (if (number? pos)
+                                       (deref (a-ref pos vals)) ; Permite lectura
+                                       (apply-env-no-ref env sym))))
+      (recursively-extended-env-record (proc-names idss bodies old-env)
+                                       (let ((pos (rib-find-position sym proc-names)))
+                                         (if (number? pos)
+                                             (deref (let ((vec (make-vector 1)))
+                                                      (vector-set! vec 0 (direct-target (closure (list-ref idss pos)
+                                                                                                (list-ref bodies pos)
+                                                                                                env)))
+                                                      (a-ref 0 vec)))
+                                             (apply-env-no-ref old-env sym)))))))
+
+; Localiza la posición de un símbolo en una lista
+(define rib-find-position
+  (lambda (sym los)
+    (list-find-position sym los)))
+
+(define list-find-position
+  (lambda (sym sos)
+    (list-index (lambda (sym1) (eqv? sym1 sym)) sos)))
+
+(define list-index
+  (lambda (pred ls)
+    (cond
+      ((null? ls) #f)
+      ((pred (car ls)) 0)
+      (else (let ((list-index-r (list-index pred (cdr ls))))
+              (if (number? list-index-r)
+                  (+ list-index-r 1)
+                  #f))))))
+
+;*******************************************************************************************
+;Blancos y Referencias
+
+(define expval?
+  (lambda (x)
+    (or (number? x) (boolean? x) (string? x) (complex-num? x) (list? x) (dictionary? x) (procval? x))))
+
+(define ref-to-direct-target?
+  (lambda (x)
+    (and (reference? x)
+         (cases reference x
+           (a-ref (pos vec)
+                  (cases target (vector-ref vec pos)
+                    (direct-target (v) #t)
+                    (indirect-target (v) #f)))))))
+
+(define deref
+  (lambda (ref)
+    (cases target (primitive-deref ref)
+      (direct-target (expval) expval)
+      (indirect-target (ref1)
+                       (cases target (primitive-deref ref1)
+                         (direct-target (expval) expval)
+                         (indirect-target (p)
+                                          (eopl:error 'deref
+                                                      "Illegal reference: ~s" ref1)))))))
+
+(define primitive-deref
+  (lambda (ref)
+    (cases reference ref
+      (a-ref (pos vec)
+             (vector-ref vec pos)))))
+
+(define setref!
+  (lambda (ref expval)
+    (let
+        ((ref (cases target (primitive-deref ref)
+                (direct-target (expval1) ref)
+                (indirect-target (ref1) ref1))))
+      (primitive-setref! ref (direct-target expval)))))
+
+(define primitive-setref!
+  (lambda (ref val)
+    (cases reference ref
+      (a-ref (pos vec)
+             (vector-set! vec pos val)))))
 
 ;****************************************************************************************
 ;Funciones Auxiliares
-
-; Localiza la posición de un símbolo en una lista
-(define list-find-position
-  (lambda (target-symbol symbol-list)
-    (find-index (lambda (sym) (eqv? sym target-symbol)) symbol-list)))
-
-; Encuentra el índice del primer elemento que satisface el predicado
-(define find-index
-  (lambda (predicate-fn lst)
-    (cond
-      ((null? lst) #f)
-      ((predicate-fn (car lst)) 0)
-      (else 
-       (let ((remaining-index (find-index predicate-fn (cdr lst))))
-         (if (number? remaining-index)
-             (+ remaining-index 1)
-             #f))))))
 
 ; Function to display complex numbers in readable format
 (define display-complex
@@ -691,7 +900,6 @@
             (dict (map (lambda (pair) 
                         (cons (car pair) (cdr pair))) 
                       bindings))))))
-
 
 ;******************************************************************************************
 (interpretador)
